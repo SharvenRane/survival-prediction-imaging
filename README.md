@@ -1,91 +1,78 @@
-# Survival Prediction Imaging
+# survival-prediction-imaging
 
-Survival outcome prediction from medical imaging features using Cox regression and deep learning
+Image based survival prediction. A small convolutional network reads an image
+and produces a single log risk score, and that score feeds a Cox proportional
+hazards head trained by maximizing the partial likelihood. Model quality is
+measured with Harrell's concordance index, the standard rank metric for right
+censored survival data.
 
-`survival-analysis` `medical-ai` `prognosis` `deep-learning` `pytorch`
+The point of this repo is to show the full pipeline working end to end on data
+where the answer is known. The synthetic dataset bakes risk directly into the
+pixels, so a correct model has to recover it, and the concordance index has to
+climb well past the 0.5 chance line.
 
-## Overview
+## Idea
 
-This repository implements a complete pipeline for **survival prediction imaging**, covering
-data preprocessing, model training, evaluation, and deployment.
+In the Cox model every subject has a hazard that scales by exp(risk), where the
+risk comes from the image. Training compares, for each subject that actually
+experienced an event, its risk against the risk of everyone still at risk at
+that moment. You never need the absolute survival curve to fit this, only the
+ordering of risks, which is why the network output is an unbounded scalar.
 
-## Features
+Two facts make the toy problem honest:
 
-- Clean, modular PyTorch implementation
-- Reproducible experiments with MLflow tracking
-- Comprehensive evaluation with standard benchmarks
-- ONNX export for production deployment
-- Detailed documentation and usage examples
+1. Higher latent risk makes an image brighter and gives it a brighter central
+   blob.
+2. Higher latent risk shortens survival time through an exponential hazard.
 
-## Installation
+So brightness is the readable signal, and a model that learns to read it ranks
+survival correctly.
 
-```bash
-git clone https://github.com/YOUR_USERNAME/survival-prediction-imaging.git
-cd survival-prediction-imaging
-pip install -r requirements.txt
-```
-
-## Quick Start
-
-```python
-from src.model import Model
-from src.trainer import Trainer
-from src.config import Config
-
-config = Config.from_yaml("configs/default.yaml")
-model = Model(config)
-trainer = Trainer(model, config)
-trainer.train()
-```
-
-## Project Structure
+## Layout
 
 ```
-survival-prediction-imaging/
-├── src/
-│   ├── model.py        # Model architecture
-│   ├── dataset.py      # Data loading and preprocessing
-│   ├── trainer.py      # Training loop
-│   ├── evaluate.py     # Evaluation metrics
-│   └── utils.py        # Helper utilities
-├── configs/
-│   └── default.yaml    # Default configuration
-├── notebooks/
-│   └── exploration.ipynb
-├── tests/
-│   └── test_model.py
-├── requirements.txt
-└── README.md
+src/
+  data.py      synthetic image survival generator
+  model.py     SurvivalCNN, a compact CNN with a linear risk head
+  losses.py    Cox partial likelihood (negative log, Breslow form)
+  metrics.py   Harrell concordance index with censoring
+  train.py     full batch training loop and c-index evaluation
+tests/
+  test_data.py     shapes, ranges, risk encoding sanity checks
+  test_losses.py   scalar, finite, differentiable, ordering behavior
+  test_metrics.py  perfect, worst, tied, censored cases
+  test_train.py    loss goes down, c-index beats chance
 ```
 
-## Results
+## Why full batch training
 
-| Model | Dataset | Metric | Score |
-|-------|---------|--------|-------|
-| Baseline | Standard | Primary | - |
-| Ours | Standard | Primary | - |
+The partial likelihood needs a well defined risk set: for a given event, who
+else was still at risk. A complete pass over the cohort keeps that set intact
+and gives a stable gradient on small data. On large cohorts you would move to
+mini batches with a within batch risk set or a sampled approximation, but for a
+few hundred synthetic images full batch is both correct and fast on CPU.
 
-## Usage
+## Numerical detail
 
-```bash
-# Train
-python train.py --config configs/default.yaml
+The loss sorts subjects by descending time and uses `torch.logcumsumexp` to get,
+for each subject, the log sum of exp(risk) over its risk set in one stable pass.
+That avoids overflow from exponentiating raw risk scores.
 
-# Evaluate
-python evaluate.py --checkpoint checkpoints/best.pth
+## Running the tests
 
-# Export to ONNX
-python export.py --checkpoint checkpoints/best.pth
+```
+python -m pytest tests/ -q
 ```
 
-## References
+Everything runs on CPU with tiny tensors and synthetic data, so there is no
+download and no GPU requirement. On a recent run all 15 tests passed in about
+two seconds. The end to end test trains on one synthetic cohort and evaluates
+the concordance index on a separate held out cohort drawn from the same
+generator, and it asserts the index lands clearly above chance.
 
-- Relevant papers and resources for survival prediction imaging
+## Using it on your own data
 
-## License
-
-MIT
-
-# update 4
-
-# update 5
+Replace `make_synthetic_survival_images` with a loader that yields an image
+tensor of shape (N, C, H, W), a time tensor (N,), and an event tensor (N,) where
+1 marks an observed event and 0 marks right censoring. The model, loss, and
+metric do not care where the images came from.

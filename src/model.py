@@ -1,53 +1,36 @@
-"""
-Survival Prediction Imaging - Model Architecture
-"""
+"""Small CNN with a Cox proportional hazards output head."""
+
 import torch
 import torch.nn as nn
-import timm
-from einops import rearrange
 
 
-class SurvivalPredictionImaging(nn.Module):
+class SurvivalCNN(nn.Module):
+    """A compact convolutional network that outputs a scalar log risk score.
+
+    The convolutional trunk produces a feature vector through global average
+    pooling, and a single linear layer maps it to one log risk value per image.
+    The output is intentionally unbounded because the Cox partial likelihood
+    operates on relative risk and only differences between scores matter.
     """
-    Main model for survival prediction imaging.
-    """
 
-    def __init__(self, config):
+    def __init__(self, in_channels: int = 1, width: int = 16):
         super().__init__()
-        self.config = config
-        self.encoder = timm.create_model(
-            config.backbone,
-            pretrained=config.pretrained,
-            features_only=True
-        )
-        self.head = nn.Sequential(
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels, width, kernel_size=3, padding=1),
+            nn.BatchNorm2d(width),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(width, width * 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(width * 2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
             nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(self.encoder.feature_info[-1]["num_chs"], config.num_classes)
         )
+        self.head = nn.Linear(width * 2, 1)
 
-    def forward(self, x):
-        features = self.encoder(x)
-        out = self.head(features[-1])
-        return out
-
-    def extract_features(self, x):
-        features = self.encoder(x)
-        pooled = nn.functional.adaptive_avg_pool2d(features[-1], 1)
-        return pooled.flatten(1)
-
-
-def build_model(config):
-    model = SurvivalPredictionImaging(config)
-    if config.get("checkpoint"):
-        state = torch.load(config.checkpoint, map_location="cpu")
-        model.load_state_dict(state["model"])
-    return model
-
-# update 2
-
-# update 6
-
-# update 10
-
-# update 12
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return a shape (N,) tensor of log risk scores."""
+        h = self.features(x)
+        h = torch.flatten(h, 1)
+        risk = self.head(h)
+        return risk.view(-1)
